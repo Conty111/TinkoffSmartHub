@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -19,52 +18,24 @@ var crctable = make([]byte, 256)
 var generator byte = 0x1D
 
 func main() {
+	// Таблица для вычисления контрольных сумм
+	CalculateTable_CRC8()
+
 	// Создаем клиент
 	client := &http.Client{}
 
-	// Тело запроса
-	var pdu []byte
-	pdu = append(pdu, Marshal(777)...)
-	pdu = append(pdu, Marshal(16383)...)
-	pdu = append(pdu, Marshal(serial)...)
-	pdu = append(pdu, byte(1))
-	pdu = append(pdu, byte(1))
-	// pdu = append(pdu, []byte{136, 208, 171, 250, 147, 49}...)
-	pdu = append(pdu, []byte("SmartHub")...)
-	var new_pdu []string
-	for _, elem := range pdu {
-		c := strconv.FormatInt(int64(elem), 16)
-		new_pdu = append(new_pdu, fmt.Sprintf("%02s", c))
-	}
-	var send []byte
-	send = append(send, byte(len(pdu)))
-	send = append(send, pdu...)
-	CalculateTable_CRC8()
-	send = append(send, ComputeCRC8(send[1:]))
-	fmt.Println(send)
-
-	// p := &Net_package{Length: 15, Payload: []byte{137, 6, 255, 127, 1, 1, 1},
-	// 	Src8: 5}
-	// packet, err := json.Marshal(p)
-	// fmt.Println(base64.StdEncoding.EncodeToString(packet))
-
-	encoded := base64.StdEncoding.EncodeToString(send)
-	encoded_body := Base_encode(encoded)
-	fmt.Println(encoded_body, encoded)
-
-	// encoded_body := Base_encode("DbMG_38BBgaI0Kv6kzGK")
-	body := strings.NewReader(encoded_body)
-
 	// Создаем POST запрос
+	body := strings.NewReader(make_packet(777, 16383, 1))
 	URL := fmt.Sprintf("http://localhost:%d", remote_serverPort)
-	req, err := http.NewRequest(http.MethodPost, URL, body)
 
+	req, err := http.NewRequest(http.MethodPost, URL, body)
 	if err != nil {
 		fmt.Println("Error creating request:", err)
 		return
 	}
 	// Меняем значение заголовка Transfer-Encoding
 	req.TransferEncoding = []string{"base64"}
+
 	// Отправляем запрос и сохраняем response
 	resp, err := client.Do(req)
 	serial += 1
@@ -76,49 +47,37 @@ func main() {
 	// Считываем body
 	resp.TransferEncoding = []string{"base64"}
 	bodyBytes, err := ioutil.ReadAll(resp.Body)
-
 	// Редактируем строку URL-base64 в правильный формат
-	// s := Base_decode(string(bodyBytes))
-	s := Base_decode("DbMG_38BBgaI0Kv6kzGK")
+	s := Base_decode(string(bodyBytes))
 	// Декодируем URL-base64
 	decoded, err := base64.StdEncoding.DecodeString(s)
-	// Создаем экземпляр пакета
-	// packet := net_package{length: decoded[0], payload: decoded[1 : decoded[0]+1], src8: decoded[decoded[0]+1]}
-	var new_pdu1 []string
-	for _, elem := range decoded {
-		c := strconv.FormatInt(int64(elem), 16)
-		new_pdu1 = append(new_pdu1, fmt.Sprintf("%02s", c))
-	}
-	fmt.Println(new_pdu1)
-	// res := payload_decoded{
-	// 	src: decoded[1:3],
-	// 	dst: decoded[3:5],
-	// }
-	fmt.Println(bodyBytes)
+	fmt.Println(resp.Body, decoded)
 }
 
-type Net_package struct {
-	Length  byte   `json:"length"`
-	Payload []byte `json:"payload"`
-	Src8    byte   `json:"src8"`
-}
+// Формирует пакет закодированный в Base64 строку
+func make_packet(src, dst, cmd int) string {
 
-func (obj *Net_package) payload_refact() string {
-	var res string
-	fmt.Println(Marshal(819))
-	for _, elem := range obj.Payload {
-		res = fmt.Sprintf("%s%08b", res, elem)
-	}
-	return res
-}
+	// Делаем payload
+	var pdu []byte
+	pdu = append(pdu, Marshal(src)...)
+	pdu = append(pdu, Marshal(dst)...)
+	pdu = append(pdu, Marshal(serial)...)
+	pdu = append(pdu, byte(1))
+	pdu = append(pdu, byte(cmd))
+	pdu = append(pdu, byte(len([]byte("SmartHub"))))
+	pdu = append(pdu, []byte("SmartHub")...)
 
-type payload_decoded struct {
-	src      []byte
-	dst      []byte
-	serial   int
-	dev_type byte
-	cmd      byte
-	cmd_body []byte
+	// Заворачиваем все в packet
+	var packet []byte
+	packet = append(packet, byte(len(pdu)))
+	packet = append(packet, pdu...)
+	packet = append(packet, ComputeCRC8(packet[1:]))
+
+	// Кодируем в Base64
+	encoded := base64.StdEncoding.EncodeToString(packet)
+	encoded_body := Base_encode(encoded)
+
+	return encoded_body
 }
 
 // Marshal converts an int into a uleb128-encoded byte array.
