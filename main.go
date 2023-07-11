@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/ioutil"
 	"net/http"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -25,25 +26,32 @@ func main() {
 	var pdu []byte
 	pdu = append(pdu, Marshal(777)...)
 	pdu = append(pdu, Marshal(16383)...)
-	for _, elem := range Marshal(serial) {
-		pdu = append(pdu, elem)
-	}
+	pdu = append(pdu, Marshal(serial)...)
 	pdu = append(pdu, byte(1))
 	pdu = append(pdu, byte(1))
-	for _, elem := range []byte("SmartHub") {
-		pdu = append(pdu, elem)
+	// pdu = append(pdu, []byte{136, 208, 171, 250, 147, 49}...)
+	pdu = append(pdu, []byte("SmartHub")...)
+	var new_pdu []string
+	for _, elem := range pdu {
+		c := strconv.FormatInt(int64(elem), 16)
+		new_pdu = append(new_pdu, fmt.Sprintf("%02s", c))
 	}
-
 	var send []byte
 	send = append(send, byte(len(pdu)))
 	send = append(send, pdu...)
 	CalculateTable_CRC8()
 	send = append(send, ComputeCRC8(send[1:]))
-
 	fmt.Println(send)
+
+	// p := &Net_package{Length: 15, Payload: []byte{137, 6, 255, 127, 1, 1, 1},
+	// 	Src8: 5}
+	// packet, err := json.Marshal(p)
+	// fmt.Println(base64.StdEncoding.EncodeToString(packet))
+
 	encoded := base64.StdEncoding.EncodeToString(send)
 	encoded_body := Base_encode(encoded)
-	fmt.Println(encoded_body)
+	fmt.Println(encoded_body, encoded)
+
 	// encoded_body := Base_encode("DbMG_38BBgaI0Kv6kzGK")
 	body := strings.NewReader(encoded_body)
 
@@ -57,7 +65,6 @@ func main() {
 	}
 	// Меняем значение заголовка Transfer-Encoding
 	req.TransferEncoding = []string{"base64"}
-	fmt.Println(req, req.Body)
 	// Отправляем запрос и сохраняем response
 	resp, err := client.Do(req)
 	serial += 1
@@ -66,36 +73,40 @@ func main() {
 		return
 	}
 	defer resp.Body.Close()
-	fmt.Println(resp, resp.Body)
 	// Считываем body
 	resp.TransferEncoding = []string{"base64"}
 	bodyBytes, err := ioutil.ReadAll(resp.Body)
 
 	// Редактируем строку URL-base64 в правильный формат
-	s := Base_decode(string(bodyBytes))
-	// s := Base_decode("DbMG_38BBgaI0Kv6kzGK")
+	// s := Base_decode(string(bodyBytes))
+	s := Base_decode("DbMG_38BBgaI0Kv6kzGK")
 	// Декодируем URL-base64
 	decoded, err := base64.StdEncoding.DecodeString(s)
 	// Создаем экземпляр пакета
 	// packet := net_package{length: decoded[0], payload: decoded[1 : decoded[0]+1], src8: decoded[decoded[0]+1]}
-
+	var new_pdu1 []string
+	for _, elem := range decoded {
+		c := strconv.FormatInt(int64(elem), 16)
+		new_pdu1 = append(new_pdu1, fmt.Sprintf("%02s", c))
+	}
+	fmt.Println(new_pdu1)
 	// res := payload_decoded{
 	// 	src: decoded[1:3],
 	// 	dst: decoded[3:5],
 	// }
-	fmt.Println(decoded)
+	fmt.Println(bodyBytes)
 }
 
-type net_package struct {
-	length  byte
-	payload []byte
-	src8    byte
+type Net_package struct {
+	Length  byte   `json:"length"`
+	Payload []byte `json:"payload"`
+	Src8    byte   `json:"src8"`
 }
 
-func (obj *net_package) payload_refact() string {
+func (obj *Net_package) payload_refact() string {
 	var res string
 	fmt.Println(Marshal(819))
-	for _, elem := range obj.payload {
+	for _, elem := range obj.Payload {
 		res = fmt.Sprintf("%s%08b", res, elem)
 	}
 	return res
@@ -132,8 +143,9 @@ func Marshal(i int) (r []byte) {
 }
 
 // Unmarshal converts a uleb128-encoded byte array into an int.
-func Unmarshal(r []byte) (total int, len int) {
+func Unmarshal(r []byte) (total int) {
 	var shift uint
+	var len int
 
 	for {
 		b := r[len]
