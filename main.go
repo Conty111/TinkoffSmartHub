@@ -4,72 +4,90 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io/ioutil"
-	"log"
 	"net/http"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
-const serverPort int = 9998
-
-type MyResponseWriter struct {
-	writer http.ResponseWriter
-}
-
-func (w *MyResponseWriter) Header() http.Header {
-	return w.writer.Header()
-}
-
-func (w *MyResponseWriter) WriteHeader(statusCode int) {
-	w.writer.WriteHeader(statusCode)
-}
-
-func (w *MyResponseWriter) Write(data []byte) (int, error) {
-	// Установка нужных заголовков перед записью данных
-	w.Header().Set("Transfer-Encoding", "base64")
-	return w.writer.Write(data)
-}
+const remote_serverPort int = 9998
+const local_port int = 7777
 
 func main() {
+	// Создаем клиент
+	client := &http.Client{}
+	// Тело запроса
 	msg := ""
 	encoded := base64.StdEncoding.EncodeToString([]byte(msg))
 	body := strings.NewReader(encoded)
-	requestURL := fmt.Sprintf("http://localhost:%d", serverPort)
-	resp, err := http.Post(requestURL, "application/x-www-form-urlencoded", body)
 
-	// http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-
-	// })
+	// Создаем POST запрос
+	URL := fmt.Sprintf("http://localhost:%d", remote_serverPort)
+	req, err := http.NewRequest(http.MethodPost, URL, body)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Println("Error creating request:", err)
+		return
 	}
+	// Меняем значение заголовка Transfer-Encoding
+	req.TransferEncoding = []string{"base64"}
 
+	// Отправляем запрос
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Println("Request error:", err)
+		return
+	}
 	defer resp.Body.Close()
 
+	// Считываем body
+	resp.TransferEncoding = []string{"base64"}
 	bodyBytes, err := ioutil.ReadAll(resp.Body)
-	fmt.Println(resp)
-	// pay, err :=
-	decoded, err := base64.StdEncoding.DecodeString(string(bodyBytes))
 
-	fmt.Println(decoded)
-	fmt.Printf("%b\n%b\n%b", decoded[0], decoded[1], decoded[2])
+	// Редактируем строку URL-base64 в правильный формат
+	s := Base_decode(string(bodyBytes))
+	// Декодируем URL-base64
+	decoded, err := base64.StdEncoding.DecodeString(s)
+	// Создаем экземпляр пакета
+	packet := net_package{length: decoded[0], payload: decoded[1 : decoded[0]+1], src8: decoded[decoded[0]+1]}
+
+	bp := packet.payload_refact()
+
+	src, _ := strconv.ParseInt(bp[0:14], 2, 64)
+	dst, _ := strconv.ParseInt(bp[14:28], 2, 64)
+	// other, _ := strconv.ParseInt(bp[28:], 2, 64)
+
+	res := payload_decoded{
+		src: Marshal(int(src)),
+		dst: Marshal(int(dst)),
+	}
+	fmt.Println(res.src, res.dst, dst)
 
 }
 
-type payload struct {
-	encoded_payload []byte
+type net_package struct {
+	length  byte
+	payload []byte
+	src8    byte
 }
 
-func (obj *payload) payload_decode() {
-
+func (obj *net_package) payload_refact() string {
+	var res string
+	fmt.Println(Marshal(819))
+	for _, elem := range obj.payload {
+		num, _ := strconv.ParseInt(fmt.Sprintf("%d", elem), 8, 64)
+		c := strconv.FormatInt(num, 2)
+		res = fmt.Sprintf("%s%08s", res, c)
+	}
+	return res
 }
 
 type payload_decoded struct {
-	src      int
-	dst      int
-	serial   int
+	src      []byte
+	dst      []byte
+	serial   []byte
 	dev_type byte
 	cmd      byte
-	cmd_body byte
+	cmd_body []byte
 }
 
 // Marshal converts an int into a uleb128-encoded byte array.
@@ -108,4 +126,17 @@ func Unmarshal(r []byte) (total int, len int) {
 	}
 
 	return
+}
+
+// Подготовка к декодированию
+func Base_decode(s string) string {
+	if utf8.RuneCountInString(s)%4 == 2 {
+		s = fmt.Sprintf("%s==", s)
+	} else if utf8.RuneCountInString(s)%4 == 3 {
+		s = fmt.Sprintf("%s=", s)
+	}
+	s = strings.ReplaceAll(s, "_", "/")
+	s = strings.ReplaceAll(s, "-", "+")
+
+	return s
 }
