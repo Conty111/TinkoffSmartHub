@@ -6,39 +6,33 @@ import (
 	"io/ioutil"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
+
+// Константы и переменные для приложения
 
 const remote_serverPort int = 9998
 const local_port int = 7777
 const hub_addr int = 777
 
-var arp_table map[int]string
+// Соответсвие адресам их устройств с типом для каждого устройства
+var arp_table map[int]interface{} = make(map[int]interface{})
+var serial int = 1 // Нумерация отправленных пакетов
+var URL string = fmt.Sprintf("http://localhost:%d", remote_serverPort)
 
-var serial int = 1
-
+// Переменные для CRC-8
 var crctable = make([]byte, 256)
 var generator byte = 0x1D
 
 func main() {
-	// Таблица для вычисления контрольных сумм
-	CalculateTable_CRC8()
+	CalculateTable_CRC8()    // Таблица для вычисления контрольных сумм
+	client := &http.Client{} // Создаем клиент
 
-	// Создаем клиент
-	client := &http.Client{}
+	var req *http.Request
 
-	// Создаем POST запрос
-	body := strings.NewReader(Make_packet(hub_addr, 16383, 1))
-	URL := fmt.Sprintf("http://localhost:%d", remote_serverPort)
-
-	req, err := http.NewRequest(http.MethodPost, URL, body)
-	if err != nil {
-		fmt.Println("Error creating request:", err)
-		return
-	}
-	// Меняем значение заголовка Transfer-Encoding
-	req.TransferEncoding = []string{"base64"}
+	req = WHOISHERE_IAMHERE(1) // 1 значит cmd = 1 (WHOISHERE)
 
 	// Отправляем запрос и сохраняем response
 	resp, err := client.Do(req)
@@ -50,33 +44,68 @@ func main() {
 	defer resp.Body.Close()
 
 	packets := Decode_response(resp)
-	fmt.Println(packets)
 
 	for len(packets) > 0 {
 		eks := Packet_resp_init(packets)
 
+		fmt.Println(eks)
 		switch eks.cmd {
 		case 1:
-			fmt.Println("Need to send IAMHERE")
-			// _, ok := arp_table[eks.src]
-			// if !ok {
-			// 	arp_table[eks.src] = eks.dev_type
-			// }
+			_, ok := arp_table[eks.src]
+			if !ok {
+				Save_device(eks)
+			}
+			req = WHOISHERE_IAMHERE(2)
+			resp, err := client.Do(req)
+			serial += 1
+			if err != nil {
+				fmt.Println("Request error:", err)
+				return
+			}
+			defer resp.Body.Close()
+			packets = append(packets, Decode_response(resp)...)
+
 		case 2:
 			fmt.Println("Need to save this packet (it's answer to WHOISHERE)")
-			// _, ok := arp_table[eks.src]
-			// if !ok {
-			// 	arp_table[eks.src] = eks.dev_type
-			// }
+			_, ok := arp_table[eks.src]
+			if !ok {
+				Save_device(eks)
+			}
 		case 4:
 			fmt.Println("Need to save STATUS")
 		case 6:
 			fmt.Println("TICK need to planning events")
 		}
-		fmt.Println(eks)
 		packets = packets[packets[0]+2:]
-
 	}
+	fmt.Println(arp_table)
+	// for addr, device := range arp_table {
+	// 	if device.dev_type > 1 && device.dev_type < 6 {
+	// 		// Отправляем запрос
+	// 		req = GET_STATUS(addr)
+	// 		resp, err := client.Do(req)
+	// 		serial += 1
+	// 		if err != nil {
+	// 			fmt.Println("Request error:", err)
+	// 			return
+	// 		}
+	// 		defer resp.Body.Close()
+	// 		// Обрабатываем пришедший STATUS
+	// 		packet_bytes := Decode_response(resp)
+	// 		packet := Packet_resp_init(packet_bytes)
+	// 		fmt.Println(packet)
+	// 		switch device.dev_type {
+	// 		case 2:
+	// 			// dev := EnvSensor{Device: device, }
+	// 			fmt.Println("EnvSensor")
+	// 		case 3:
+	// 			if packet.cmd_body[0] == byte(1) {
+
+	// 			}
+
+	// 		}
+	// 	}
+	// }
 }
 
 type Packet_resp struct {
@@ -89,8 +118,44 @@ type Packet_resp struct {
 	cmd_body []byte
 }
 
+type Device struct {
+	addr      int
+	dev_name  string
+	dev_type  byte
+	dev_props []byte
+}
+
+type EnvSensor struct {
+	Device
+	sensors  byte
+	triggers []Trigger
+	values   []byte
+}
+
+type Trigger struct {
+	op    byte
+	value int
+	name  string
+}
+
+type Switch struct {
+	Device
+	devices []string
+	status  byte
+}
+
+type Lamp struct {
+	Device
+	status byte
+}
+
+type Socket struct {
+	Device
+	status byte
+}
+
 // Распаковывает пакет (массив байтов) в переменную типа Packet_resp.
-// Предварительно
+// Предварительно проверяет контрольную сумму
 func Packet_resp_init(packet []byte) Packet_resp {
 
 	// Проверка контрольной суммы
@@ -163,17 +228,17 @@ func Decode_response(resp *http.Response) []byte {
 }
 
 // Формирует пакет, закодированный в Base64 строку
-func Make_packet(src, dst, cmd int) string {
+func Make_packet(dst, cmd int) string {
 
 	// Делаем payload
 	var pdu []byte
-	pdu = append(pdu, Marshal(src)...)
+	pdu = append(pdu, Marshal(hub_addr)...)
 	pdu = append(pdu, Marshal(dst)...)
 	pdu = append(pdu, Marshal(serial)...)
 	pdu = append(pdu, byte(1))
 	pdu = append(pdu, byte(cmd))
-	pdu = append(pdu, byte(len([]byte("SmartHub"))))
-	pdu = append(pdu, []byte("SmartHub")...)
+	pdu = append(pdu, byte(len([]byte("SMARTHUB"))))
+	pdu = append(pdu, []byte("SMARTHUB")...)
 
 	// Заворачиваем все в packet
 	var packet []byte
@@ -186,6 +251,98 @@ func Make_packet(src, dst, cmd int) string {
 	encoded_body := Base_encode(encoded)
 
 	return encoded_body
+}
+
+// Создает POST запрос GET_STATUS
+func GET_STATUS(addr int) *http.Request {
+	packet := Make_packet(addr, 3)
+	return Create_POST(packet)
+}
+
+// Создает POST запрос WHOISHERE или IAMHERE в зависимости от cmd
+func WHOISHERE_IAMHERE(cmd int) *http.Request {
+	packet := Make_packet(16383, cmd)
+	return Create_POST(packet)
+}
+
+func Parse_triggers(dev_props []byte) []Trigger {
+	count_sens := strings.Count(strconv.FormatInt(int64(dev_props[0]), 2), "1")
+	var trigers_array []Trigger
+	for i := 0; i < count_sens; i++ {
+		var value []byte
+		var last_idx int
+		for idx, elem := range dev_props[1:] {
+			if elem > 127 {
+				value = append(value, elem)
+			} else {
+				value = append(value, elem)
+				last_idx = idx
+				break
+			}
+		}
+		trig := Trigger{
+			op:    dev_props[0],
+			value: Unmarshal(value),
+			name:  string(dev_props[last_idx+1 : int(dev_props[last_idx+1])+last_idx]),
+		}
+		trigers_array = append(trigers_array, trig)
+	}
+	return trigers_array
+}
+
+func Create_POST(body_string string) *http.Request {
+	// Создаем POST запрос
+	body := strings.NewReader(body_string)
+	URL := fmt.Sprintf("http://localhost:%d", remote_serverPort)
+
+	req, err := http.NewRequest(http.MethodPost, URL, body)
+	if err != nil {
+		log.Fatal("Error creating request:", err)
+	}
+	// Меняем значение заголовка Transfer-Encoding
+	req.TransferEncoding = []string{"base64"}
+
+	return req
+}
+
+func Save_device(eks Packet_resp) {
+	basic := Device{
+		addr:      eks.src,
+		dev_name:  string(eks.cmd_body[1 : eks.cmd_body[0]+1]),
+		dev_type:  eks.dev_type,
+		dev_props: eks.cmd_body[eks.cmd_body[0]+1:],
+	}
+	switch eks.dev_type {
+	case 2:
+		triggers_array := Parse_triggers(basic.dev_props)
+		arp_table[eks.src] = EnvSensor{
+			Device:   basic,
+			sensors:  basic.dev_props[0],
+			triggers: triggers_array,
+		}
+	case 3:
+		var words_count int = int(basic.dev_props[0])
+		var string_len int = int(basic.dev_props[1])
+		var string_array []string
+		for i, c := 1, 0; c < words_count; i += string_len + 1 {
+			string_array = append(string_array, string(basic.dev_props[i:i+string_len+1]))
+			c += 1
+		}
+		arp_table[eks.src] = Switch{
+			Device:  basic,
+			devices: string_array,
+		}
+	case 4:
+		arp_table[eks.src] = Lamp{
+			Device: basic,
+		}
+	case 5:
+		arp_table[eks.src] = Socket{
+			Device: basic,
+		}
+	case 6:
+		arp_table[eks.src] = basic
+	}
 }
 
 // Marshal converts an int into a uleb128-encoded byte array.
