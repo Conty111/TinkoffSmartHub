@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -11,6 +12,9 @@ import (
 
 const remote_serverPort int = 9998
 const local_port int = 7777
+const hub_addr int = 777
+
+var arp_table map[int]string
 
 var serial int = 1
 
@@ -25,7 +29,7 @@ func main() {
 	client := &http.Client{}
 
 	// Создаем POST запрос
-	body := strings.NewReader(make_packet(777, 16383, 1))
+	body := strings.NewReader(Make_packet(hub_addr, 16383, 1))
 	URL := fmt.Sprintf("http://localhost:%d", remote_serverPort)
 
 	req, err := http.NewRequest(http.MethodPost, URL, body)
@@ -44,18 +48,122 @@ func main() {
 		return
 	}
 	defer resp.Body.Close()
+
+	packets := Decode_response(resp)
+	fmt.Println(packets)
+
+	for len(packets) > 0 {
+		eks := Packet_resp_init(packets)
+
+		switch eks.cmd {
+		case 1:
+			fmt.Println("Need to send IAMHERE")
+			// _, ok := arp_table[eks.src]
+			// if !ok {
+			// 	arp_table[eks.src] = eks.dev_type
+			// }
+		case 2:
+			fmt.Println("Need to save this packet (it's answer to WHOISHERE)")
+			// _, ok := arp_table[eks.src]
+			// if !ok {
+			// 	arp_table[eks.src] = eks.dev_type
+			// }
+		case 4:
+			fmt.Println("Need to save STATUS")
+		case 6:
+			fmt.Println("TICK need to planning events")
+		}
+		fmt.Println(eks)
+		packets = packets[packets[0]+2:]
+
+	}
+}
+
+type Packet_resp struct {
+	length   byte
+	src      int
+	dst      int
+	serial   int
+	dev_type byte
+	cmd      byte
+	cmd_body []byte
+}
+
+// Распаковывает пакет (массив байтов) в переменную типа Packet_resp.
+// Предварительно
+func Packet_resp_init(packet []byte) Packet_resp {
+
+	// Проверка контрольной суммы
+	if packet[int(packet[0])+1] != ComputeCRC8(packet[1:int(packet[0])+1]) {
+		log.Fatal("CRC-8 isn't correct", packet[int(packet[0])+3], ComputeCRC8(packet[1:int(packet[0])+3]))
+	}
+
+	var eks Packet_resp // Переменная экземляр пакета
+	var last_idx int    // Переменная для хранения индекса, на котором остановилась распаковка
+
+	eks.length = packet[0] // Длина payload
+
+	// Поле src
+	if packet[1] > 127 {
+		eks.src = Unmarshal(packet[1:3])
+		last_idx = 3
+	} else {
+		eks.src = int(packet[1])
+		last_idx = 2
+	}
+
+	// Поле dst
+	if packet[last_idx] > 127 {
+		eks.dst = Unmarshal(packet[last_idx : last_idx+2])
+		last_idx += 2
+	} else {
+		eks.dst = int(packet[last_idx])
+		last_idx += 1
+	}
+
+	// Поле serial
+	if packet[last_idx] < 128 {
+		eks.serial = int(packet[last_idx])
+		last_idx += 1
+	} else {
+		var i int
+		for i = 5; packet[last_idx+i] > 127; i++ {
+		}
+		eks.serial = Unmarshal(packet[last_idx : last_idx+i])
+		last_idx += i
+	}
+
+	// Поля dev_type, cmd и cmd_body
+	eks.dev_type = packet[last_idx]
+	eks.cmd = packet[last_idx+1]
+	eks.cmd_body = packet[last_idx+2 : packet[0]+1]
+
+	return eks
+}
+
+// Декодирует полученный response в массив байтов
+// Массив байтов - последовательность пакетов
+func Decode_response(resp *http.Response) []byte {
+
 	// Считываем body
 	resp.TransferEncoding = []string{"base64"}
 	bodyBytes, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		log.Fatal(err)
+	}
 	// Редактируем строку URL-base64 в правильный формат
 	s := Base_decode(string(bodyBytes))
-	// Декодируем URL-base64
+
+	// Декодируем URL-base64 в массив байтов
 	decoded, err := base64.StdEncoding.DecodeString(s)
-	fmt.Println(resp.Body, decoded)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return decoded
 }
 
-// Формирует пакет закодированный в Base64 строку
-func make_packet(src, dst, cmd int) string {
+// Формирует пакет, закодированный в Base64 строку
+func Make_packet(src, dst, cmd int) string {
 
 	// Делаем payload
 	var pdu []byte
@@ -146,26 +254,8 @@ func Base_encode(s string) string {
 	return s
 }
 
-func Crc8(data []byte) byte {
-	crc := byte(0x00)
-
-	for _, b := range data {
-		crc ^= b
-
-		for i := 0; i < 8; i++ {
-			if crc&0x80 != 0 {
-				crc = (crc << 1) ^ 0x31
-			} else {
-				crc <<= 1
-			}
-		}
-	}
-
-	return crc
-}
-
+// Создает таблицу для вычисления контрольных сумм CRC-8
 func CalculateTable_CRC8() {
-
 	for dividend := 0; dividend < 256; dividend++ {
 		currByte := byte(dividend)
 
@@ -182,6 +272,7 @@ func CalculateTable_CRC8() {
 	}
 }
 
+// Вычисляет контрольную сумму по алгоритму CRC-8
 func ComputeCRC8(bytes []byte) byte {
 	crc := byte(0)
 	for _, b := range bytes {
