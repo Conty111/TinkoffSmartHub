@@ -15,7 +15,7 @@ import (
 
 // Здесь хранятся все устройства
 // Адрес: переменная типа Устройство
-// Example -> 2: EnvSensor
+// Example -> [2: EnvSensor, 819: Switch]
 var arp_table map[int]interface{} = make(map[int]interface{})
 var hub_addr int   // Адрес хаба в сети
 var serial int = 1 // Нумерация отправленных пакетов
@@ -334,6 +334,7 @@ func Save_device(eks Packet_resp) {
 	case 6:
 		arp_table[eks.src] = basic
 	}
+	return
 }
 
 // Проверяет наличие устройства в arp_table
@@ -585,9 +586,9 @@ func CalculateTable_CRC8() {
 				currByte <<= 1
 			}
 		}
-
 		crctable[dividend] = currByte
 	}
+	return
 }
 
 // ComputeCRC8() вычисляет контрольную сумму по алгоритму CRC-8
