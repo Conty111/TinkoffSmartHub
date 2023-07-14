@@ -508,13 +508,11 @@ func Check_sensors(elem EnvSensor) []byte {
 		if op[2] == 49 {
 			// Сравнивать по условию больше
 			if trigger.value > array_values[idx] {
-				fmt.Println("Датчик превысил", trigger)
 				packets = append(packets, Find_related_dev(trigger)...)
 			}
 		} else {
 			// Сравнивать по условию меньше
 			if trigger.value < array_values[idx] {
-				fmt.Println("Датчик пренизил", trigger)
 				packets = append(packets, Find_related_dev(trigger)...)
 			}
 		}
