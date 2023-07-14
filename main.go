@@ -13,9 +13,11 @@ import (
 	"unicode/utf8"
 )
 
-// Соответсвие адресам их устройств с типом для каждого устройства
+// Здесь хранятся все устройства
+// Адрес: переменная типа Устройство
+// Example -> 2: EnvSensor
 var arp_table map[int]interface{} = make(map[int]interface{})
-var hub_addr int   // Уникальный адрес устройства
+var hub_addr int   // Адрес хаба в сети
 var serial int = 1 // Нумерация отправленных пакетов
 
 // Переменные для http запросов
@@ -26,6 +28,7 @@ var client *http.Client
 var crctable = make([]byte, 256)
 var generator byte = 0x1D
 
+// Точка входа приложения
 func main() {
 	// Сохраняем аргументы при запуске
 	args := os.Args
@@ -36,18 +39,17 @@ func main() {
 	}
 	hub_addr = int(addr)
 
-	CalculateTable_CRC8()   // Таблица для вычисления контрольных сумм
+	CalculateTable_CRC8()
 	client = &http.Client{} // Создаем клиент для http запросов
 
-	req := WHOISHERE_IAMHERE(1) // 1 значит cmd = 1 (WHOISHERE)
+	req := WHOISHERE_IAMHERE(1)
 
-	// Отправляем запрос и сохраняем response
 	resp := Send_request(req)
 	for resp.Status == "200 OK" {
 		packets := Decode_response(resp)
 		resp.Body.Close()
 
-		// Делаем 2 тика, ждем все устройства, сохраняем ответы
+		// Делаем 2 тика, ждем ответы от всех устройств и сохраняем ответы
 		packets = append(packets, Communicate_2ticks()...)
 		req_packet := Read_packets(packets)
 		packets = nil
@@ -59,7 +61,8 @@ func main() {
 	}
 }
 
-// Отправляет 2 пустых запроса чтобы дождаться получения пакетов
+// Communicate_2ticks() отправляет 2 пустых запроса и
+// возвращает ответы в виде массива байтов
 func Communicate_2ticks() []byte {
 	req := TICK()
 	resp := Send_request(req)
@@ -119,7 +122,7 @@ type Socket struct {
 	status byte
 }
 
-// Распаковывает пакет (массив байтов) в переменную типа Packet_resp.
+// Packet_parse() распаковывает пакет (массив байтов) в переменную типа Packet_resp
 // Предварительно проверяет контрольную сумму
 func Packet_parse(packet []byte) Packet_resp {
 	// Проверка контрольной суммы
@@ -172,7 +175,7 @@ func Packet_parse(packet []byte) Packet_resp {
 	return eks
 }
 
-// Декодирует полученный response в массив байтов
+// Decode_response() декодирует полученный response в массив байтов
 // Массив байтов - последовательность пакетов
 func Decode_response(resp *http.Response) []byte {
 
@@ -193,19 +196,7 @@ func Decode_response(resp *http.Response) []byte {
 	return decoded
 }
 
-// Формирует пакет, закодированный в Base64 строку
-func Make_base64(dst, cmd_body int, cmd, dev_type byte) string {
-
-	pdu := Make_payload(dst, dev_type, cmd, byte(cmd_body))
-	packet := Make_packet(pdu)
-
-	// Кодируем в Base64
-	encoded := base64.StdEncoding.EncodeToString(packet)
-	encoded_body := Base_encode(encoded)
-
-	return encoded_body
-}
-
+// Make_packet() формирует из переданного payload пакет
 func Make_packet(pdu []byte) []byte {
 	// Заворачиваем все в packet
 	var packet []byte
@@ -216,7 +207,7 @@ func Make_packet(pdu []byte) []byte {
 	return packet
 }
 
-// Делаем payload
+// Make_payload() формирует поле payload для пакета
 func Make_payload(dst int, dev_type, cmd, cmd_body byte) []byte {
 	var pdu []byte
 	pdu = append(pdu, Marshal(hub_addr)...)
@@ -235,8 +226,13 @@ func Make_payload(dst int, dev_type, cmd, cmd_body byte) []byte {
 
 // Создает POST запрос WHOISHERE или IAMHERE в зависимости от cmd
 func WHOISHERE_IAMHERE(cmd byte) *http.Request {
-	packet := Make_base64(16383, 0, cmd, 1)
-	return Create_POST(packet)
+	packet := Make_packet(Make_payload(16383, 1, cmd, 0))
+
+	// Кодируем в Base64
+	encoded := base64.StdEncoding.EncodeToString(packet)
+	encoded_body := Base_encode(encoded)
+
+	return Create_POST(encoded_body)
 }
 
 // Пустой запрос для того, чтобы "пикать" сервер и ждать ответ
@@ -244,7 +240,8 @@ func TICK() *http.Request {
 	return Create_POST(" ")
 }
 
-// Преобразует dev_props (массив байтов) в массив тригерров типа Trigger
+// Parse_triggers() преобразует dev_props
+// (массив байтов) в массив тригерров типа Trigger
 func Parse_triggers(dev_props []byte) []Trigger {
 	count_sens := int(dev_props[1])
 	dev_props = dev_props[2:]
@@ -272,10 +269,10 @@ func Parse_triggers(dev_props []byte) []Trigger {
 	return triggers_array
 }
 
+// Создает POST запрос для функции Send_request()
+// В body записывает переданную строку
 func Create_POST(body_string string) *http.Request {
-	// Создаем POST запрос
 	body := strings.NewReader(body_string)
-
 	req, err := http.NewRequest(http.MethodPost, URL, body)
 	if err != nil {
 		log.Fatal("Error creating request:", err)
@@ -286,6 +283,7 @@ func Create_POST(body_string string) *http.Request {
 	return req
 }
 
+// Функция, которая отправляет запрос и возвращает ответ
 func Send_request(req *http.Request) *http.Response {
 	resp, err := client.Do(req)
 	if resp.Status == "204 No Content" {
@@ -296,7 +294,8 @@ func Send_request(req *http.Request) *http.Response {
 	return resp
 }
 
-// Сохраняет устройство и его тип в arp_table
+// Сохраняет устройство в соответствии с его типом в arp_table
+// На вход принимает переменную типа Packet_resp
 func Save_device(eks Packet_resp) {
 	basic := Device{
 		addr:      eks.src,
@@ -336,11 +335,14 @@ func Save_device(eks Packet_resp) {
 		arp_table[eks.src] = basic
 	}
 }
+
+// Проверяет наличие устройства в arp_table
+// Если его нет или изменились его свойства, сохраняет его
 func Check_saved(packet Packet_resp) {
 	device, ok := arp_table[packet.src]
 	if !ok {
 		Save_device(packet)
-	} else if packet.cmd == byte(1) {
+	} else if packet.cmd == 1 {
 		var cmd_body []byte
 		switch device.(type) {
 		case Switch:
@@ -364,9 +366,10 @@ func Check_saved(packet Packet_resp) {
 			Save_device(packet)
 		}
 	}
+	return
 }
 
-// Marshal converts an int into a uleb128-encoded byte array.
+// Marshal конвертирует тип int в uleb128 как массив байтов
 func Marshal(i int) (r []byte) {
 	var len int
 	if i == 0 {
@@ -383,11 +386,10 @@ func Marshal(i int) (r []byte) {
 		}
 		len++
 	}
-
 	return
 }
 
-// Unmarshal converts a uleb128-encoded byte array into an int.
+// Unmarshal конвертирует uleb128 массив байтов в число типа int
 func Unmarshal(buf []byte) (total int) {
 	var i int
 	var shift uint
@@ -405,7 +407,7 @@ func Unmarshal(buf []byte) (total int) {
 	return i
 }
 
-// Подготовка к декодированию
+// Base_decode() добавляет отступы к base64 строке
 func Base_decode(s string) string {
 	if utf8.RuneCountInString(s)%4 == 2 {
 		s = fmt.Sprintf("%s==", s)
@@ -418,7 +420,7 @@ func Base_decode(s string) string {
 	return s
 }
 
-// Обратная Base_decode функция
+// Base_encode() убирает все отступы в base64 строке
 func Base_encode(s string) string {
 	col := utf8.RuneCountInString(s)
 	if col > 0 {
@@ -436,10 +438,8 @@ func Base_encode(s string) string {
 
 }
 
-// Считывает все пришедшие пакеты, обрабатывает
-// Если исходя из пришедших пакетов нужно послать какой-либо запрос,
-// то пакет с этим запросом добавляется в окончательную пачку пакетов
-// для запроса, а эта пачка возвращается функцией
+// Read_packets() обрабатывает все пришедшие пакеты
+// Возвращает массив байтов с пакетами для отправки
 func Read_packets(packets []byte) []byte {
 	var req_packet []byte
 	for len(packets) > 0 {
@@ -469,7 +469,7 @@ func Read_packets(packets []byte) []byte {
 				elem := arp_table[eks.src].(Switch)
 				elem.status = eks.cmd_body[0]
 				arp_table[eks.src] = elem
-				req_packet = append(req_packet, Check_switch_device_status(elem)...)
+				req_packet = append(req_packet, Set_switch_device_status(elem)...)
 			case 4:
 				elem := arp_table[eks.src].(Lamp)
 				elem.status = byte(eks.cmd_body[0])
@@ -485,11 +485,11 @@ func Read_packets(packets []byte) []byte {
 	return req_packet
 }
 
-// Проверяет сенсор, проверяя каждый триггер
-// Если значения триггера превышают норму, добавляет пакет для SET_STATUS
-// с устройством, указанным в триггере, в пачку пакетов.
-// Иначе возвращает пустой пакетй, или если устройство,
-// указанное в триггере, не найдено в сохраненных
+// Check_sensor() проверяет сенсор, проверяя каждый триггер
+// Если значения триггера превышают норму, создает пакет типа SET_STATUS
+// с src и dev_type устройства, указанного в триггере.
+// Возвращает пачку пакетов для запроса
+// Если устройство триггера не найдено, пакет для него не создается
 func Check_sensors(elem EnvSensor) []byte {
 	var array_values []int
 	var tmp_arr []byte
@@ -520,7 +520,10 @@ func Check_sensors(elem EnvSensor) []byte {
 	return packets
 }
 
-func Check_switch_device_status(elem Switch) []byte {
+// Set_switch_device_status() формирует пачку пакетов
+// для установления всем устройствам, связанным с Switch
+// аналогичного статуса (0 или 1)
+func Set_switch_device_status(elem Switch) []byte {
 	var req_packet []byte
 	for _, dev_name := range elem.devices {
 		for _, device := range arp_table {
@@ -539,9 +542,12 @@ func Check_switch_device_status(elem Switch) []byte {
 		}
 	}
 	return req_packet
-
 }
 
+// Find_related_dev() находит связанное с триггером
+// устройство в arp_table и возвращает пакет SET_STATUS
+// с нужными параметрами
+// Вызывается если значения триггера больше или меньше нормы
 func Find_related_dev(trigger Trigger) []byte {
 	var packet []byte
 	var src int
@@ -566,7 +572,7 @@ func Find_related_dev(trigger Trigger) []byte {
 	return packet
 }
 
-// Создает таблицу для вычисления контрольных сумм CRC-8
+// CalculateTable_CRC8() создает таблицу для вычисления контрольных сумм CRC-8
 func CalculateTable_CRC8() {
 	for dividend := 0; dividend < 256; dividend++ {
 		currByte := byte(dividend)
@@ -584,7 +590,7 @@ func CalculateTable_CRC8() {
 	}
 }
 
-// Вычисляет контрольную сумму по алгоритму CRC-8
+// ComputeCRC8() вычисляет контрольную сумму по алгоритму CRC-8
 func ComputeCRC8(bytes []byte) byte {
 	crc := byte(0)
 	for _, b := range bytes {
