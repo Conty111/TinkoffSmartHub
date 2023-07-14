@@ -57,22 +57,6 @@ func main() {
 		req = Create_POST(encoded_right)
 		resp = Send_request(req)
 	}
-
-	// ТЕСТЫ для EnvSensor
-	// delete(arp_table, 2)
-	// test1 := Base_decode("OAL_fwQCAghTRU5TT1IwMQ8EDGQGT1RIRVIxD7AJBk9USEVSMgCsjQYGT1RIRVIzCAAGT1RIRVI09w")
-	// test2, err := base64.StdEncoding.DecodeString(test1)
-	// packets = append(packets, test2...)
-	// req_packet = Read_packets(packets)
-	// packets = nil
-	// encoded = base64.StdEncoding.EncodeToString(req_packet)
-	// encoded_right = Base_encode(encoded)
-
-	// test1 = Base_decode("EQIBBgIEBKUB2jbUjgaMjfILoQ")
-	// test2, err = base64.StdEncoding.DecodeString(test1)
-	// packets = append(packets, test2...)
-	// req_packet = Read_packets(packets)
-	// packets = nil
 }
 
 // Отправляет 2 пустых запроса чтобы дождаться получения пакетов
@@ -137,7 +121,7 @@ type Socket struct {
 
 // Распаковывает пакет (массив байтов) в переменную типа Packet_resp.
 // Предварительно проверяет контрольную сумму
-func Packet_resp_init(packet []byte) Packet_resp {
+func Packet_parse(packet []byte) Packet_resp {
 	// Проверка контрольной суммы
 	my_crc := ComputeCRC8(packet[1 : int(packet[0])+1])
 	crc := packet[int(packet[0])+1]
@@ -264,7 +248,7 @@ func TICK() *http.Request {
 func Parse_triggers(dev_props []byte) []Trigger {
 	count_sens := int(dev_props[1])
 	dev_props = dev_props[2:]
-	var trigers_array []Trigger
+	triggers_array := make([]Trigger, count_sens)
 	for i := 0; i < count_sens; i++ {
 		var value []byte
 		var last_idx int
@@ -283,9 +267,9 @@ func Parse_triggers(dev_props []byte) []Trigger {
 			name:  string(dev_props[last_idx+1 : int(dev_props[last_idx])+last_idx+1]),
 		}
 		dev_props = dev_props[int(dev_props[last_idx])+last_idx+1:]
-		trigers_array = append(trigers_array, trig)
+		triggers_array[i] = trig
 	}
-	return trigers_array
+	return triggers_array
 }
 
 func Create_POST(body_string string) *http.Request {
@@ -304,7 +288,6 @@ func Create_POST(body_string string) *http.Request {
 
 func Send_request(req *http.Request) *http.Response {
 	resp, err := client.Do(req)
-	fmt.Println(resp.Status)
 	if resp.Status == "204 No Content" {
 		os.Exit(0)
 	} else if err != nil {
@@ -313,6 +296,7 @@ func Send_request(req *http.Request) *http.Response {
 	return resp
 }
 
+// Сохраняет устройство и его тип в arp_table
 func Save_device(eks Packet_resp) {
 	basic := Device{
 		addr:      eks.src,
@@ -404,21 +388,21 @@ func Marshal(i int) (r []byte) {
 }
 
 // Unmarshal converts a uleb128-encoded byte array into an int.
-func Unmarshal(r []byte) (total int) {
+func Unmarshal(buf []byte) (total int) {
+	var i int
 	var shift uint
-	var len int
 
 	for {
-		b := r[len]
-		len++
-		total |= (int(b&0x7F) << shift)
+		b := buf[0]
+		buf = buf[1:]
+		i |= int(b&0x7F) << shift
+		shift += 7
 		if b&0x80 == 0 {
 			break
 		}
-		shift += 7
 	}
 
-	return
+	return i
 }
 
 // Подготовка к декодированию
@@ -452,11 +436,14 @@ func Base_encode(s string) string {
 
 }
 
-// Возвращает пачку пакетов для запроса
+// Считывает все пришедшие пакеты, обрабатывает
+// Если исходя из пришедших пакетов нужно послать какой-либо запрос,
+// то пакет с этим запросом добавляется в окончательную пачку пакетов
+// для запроса, а эта пачка возвращается функцией
 func Read_packets(packets []byte) []byte {
 	var req_packet []byte
 	for len(packets) > 0 {
-		eks := Packet_resp_init(packets)
+		eks := Packet_parse(packets)
 		switch eks.cmd {
 		case 1:
 			Check_saved(eks)
@@ -476,38 +463,36 @@ func Read_packets(packets []byte) []byte {
 				elem := arp_table[eks.src].(EnvSensor)
 				elem.values = eks.cmd_body
 				arp_table[eks.src] = elem
-				// Проверить датчики
-				src, dev_type, on_or_off := Check_sensors(elem)
-				if src != 0 {
-					set_stat_packet := Make_packet(Make_payload(src, dev_type, 5, on_or_off))
-					req_packet = append(req_packet, set_stat_packet...)
-				}
+				packets := Check_sensors(elem)
+				req_packet = append(req_packet, packets...)
 			case 3:
 				elem := arp_table[eks.src].(Switch)
 				elem.status = eks.cmd_body[0]
 				arp_table[eks.src] = elem
+				req_packet = append(req_packet, Check_switch_device_status(elem)...)
 			case 4:
 				elem := arp_table[eks.src].(Lamp)
 				elem.status = byte(eks.cmd_body[0])
 				arp_table[eks.src] = elem
 			case 5:
-				elem := arp_table[eks.src].(Lamp)
+				elem := arp_table[eks.src].(Socket)
 				elem.status = byte(eks.cmd_body[0])
 				arp_table[eks.src] = elem
 			}
-		case 6:
-			fmt.Println("TICK", eks)
 		}
 		packets = packets[packets[0]+2:]
 	}
 	return req_packet
 }
 
-func Check_sensors(elem EnvSensor) (int, byte, byte) {
+// Проверяет сенсор, проверяя каждый триггер
+// Если значения триггера превышают норму, добавляет пакет для SET_STATUS
+// с устройством, указанным в триггере, в пачку пакетов.
+// Иначе возвращает пустой пакетй, или если устройство,
+// указанное в триггере, не найдено в сохраненных
+func Check_sensors(elem EnvSensor) []byte {
 	var array_values []int
 	var tmp_arr []byte
-	var src int
-	var dev_type, on_or_off byte
 	for _, value := range elem.values {
 		if value > 128 {
 			tmp_arr = append(tmp_arr, value)
@@ -517,49 +502,70 @@ func Check_sensors(elem EnvSensor) (int, byte, byte) {
 			tmp_arr = nil
 		}
 	}
+	var packets []byte
 	for idx, trigger := range elem.triggers {
 		op := fmt.Sprintf("%04s", strconv.FormatInt(int64(trigger.op), 2))
-		on_or_off = trigger.op % 2
 		if op[2] == 49 {
 			// Сравнивать по условию больше
 			if trigger.value > array_values[idx] {
-				for i, dev := range arp_table {
-					switch dev.(type) {
-					case Lamp:
-						if dev.(Lamp).dev_name == trigger.name {
-							src = i
-							dev_type = 4
-						}
-					case Socket:
-						if dev.(Socket).dev_name == trigger.name {
-							src = i
-							dev_type = 5
-						}
-					}
-				}
-
+				fmt.Println("Датчик превысил", trigger)
+				packets = append(packets, Find_related_dev(trigger)...)
 			}
 		} else {
 			// Сравнивать по условию меньше
 			if trigger.value < array_values[idx] {
-				for i, dev := range arp_table {
-					switch dev.(type) {
-					case Lamp:
-						if dev.(Lamp).dev_name == trigger.name {
-							src = i
-							dev_type = 4
-						}
-					case Socket:
-						if dev.(Socket).dev_name == trigger.name {
-							src = i
-							dev_type = 5
-						}
-					}
+				fmt.Println("Датчик пренизил", trigger)
+				packets = append(packets, Find_related_dev(trigger)...)
+			}
+		}
+	}
+	return packets
+}
+
+func Check_switch_device_status(elem Switch) []byte {
+	var req_packet []byte
+	for _, dev_name := range elem.devices {
+		for _, device := range arp_table {
+			switch device.(type) {
+			case Lamp:
+				if device.(Lamp).dev_name == dev_name {
+					packet := Make_packet(Make_payload(device.(Lamp).addr, 4, 5, elem.status))
+					req_packet = append(req_packet, packet...)
+				}
+			case Socket:
+				if device.(Socket).dev_name == dev_name {
+					packet := Make_packet(Make_payload(device.(Lamp).addr, 4, 5, elem.status))
+					req_packet = append(req_packet, packet...)
 				}
 			}
 		}
 	}
-	return src, dev_type, on_or_off
+	return req_packet
+
+}
+
+func Find_related_dev(trigger Trigger) []byte {
+	var packet []byte
+	var src int
+	var dev_type byte
+	OnOrOff := trigger.op % 2
+	for i, dev := range arp_table {
+		switch dev.(type) {
+		case Lamp:
+			if dev.(Lamp).dev_name == trigger.name {
+				src = i
+				dev_type = 4
+				packet = Make_packet(Make_payload(src, dev_type, 5, OnOrOff))
+			}
+		case Socket:
+			if dev.(Socket).dev_name == trigger.name {
+				src = i
+				dev_type = 4
+				packet = Make_packet(Make_payload(src, dev_type, 5, OnOrOff))
+			}
+		}
+	}
+	return packet
 }
 
 // Создает таблицу для вычисления контрольных сумм CRC-8
